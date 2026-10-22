@@ -14,6 +14,11 @@ Built as project 3 of three; the others are
 creating a member of staff 201, repeating the same email 409, and the list
 endpoint returns the stored row.
 
+Every push builds with warnings as errors and runs the suite in GitHub Actions
+(about 35 seconds):
+
+![CI run passing](docs/screenshots/ci-green.png)
+
 ## What it does
 
 | Area | Implementation |
