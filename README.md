@@ -77,6 +77,48 @@ curl -s localhost:8081/healthz
 dotnet test                   # 16 integration tests, SQLite, no services needed
 ```
 
+## Deployed
+
+Running on the home server, reached over loopback and an SSH tunnel:
+
+```bash
+./deploy.sh                   # REMOTE=kota@server, uses docker-compose.server.yml
+```
+
+`docker-compose.server.yml` exists because the server is aarch64 and the
+`mssql/server` images are published for x86-64 only. That variant runs the same
+binary against SQLite on a bind mount; the application supports SQLite already
+(it is the default for local runs and the tests), so only the engine differs.
+`docker-compose.yml`, with SQL Server, remains the deployment for an x86-64 host.
+
+Verified against the running container:
+
+```text
+$ curl -s localhost:8081/healthz
+{"status":"ok"} [200]
+
+$ curl -s -c jar -X POST localhost:8081/api/auth/login \
+    -d '{"email":"admin@example.com","password":"..."}'
+[204]  # session cookie set
+
+$ curl -s -b jar localhost:8081/api/auth/me
+{"email":"admin@example.com","role":2}   # 0 Viewer, 1 Manager, 2 Admin
+
+$ curl -s -b jar -X POST localhost:8081/api/staff -d '{..."email":"ada@example.com"...}'
+{"id":1,"firstName":"Ada","lastName":"Lovelace",...,"createdAt":"..."} [201]
+
+$ # same request again
+{"title":"Email already in use","status":409,"detail":"A member of staff with the
+ email 'ada@example.com' already exists."} [409]
+
+$ curl -s -b jar 'localhost:8081/api/staff?q=lovelace&page=1&pageSize=5'
+{"items":[{..."email":"ada@example.com"...}],"total":1,"page":1,"pageSize":5}
+```
+
+The container settles at about 85 MB with a 256 MB cap; port 8081 is bound to
+`127.0.0.1` only. The seeded administrator password lives in `.env` on the
+server, mode 600 — read it there rather than from this repository.
+
 ## Design decisions
 
 - **Cookie auth, not bearer tokens.** The client is a same-origin application;
@@ -103,5 +145,9 @@ dotnet test                   # 16 integration tests, SQLite, no services needed
 - No account lockout or rate limiting on `/api/auth/login`.
 - Salary is stored as `decimal(18,2)` with no currency column.
 - No OpenAPI document; the endpoint table above is the contract.
+- The server deployment uses SQLite because the SQL Server image has no arm64
+  build; the SQL Server path is exercised by migrations and CI, not by that host.
+- One instance only: SQLite and in-memory sessions rule out scaling out without
+  a shared database and shared data-protection keys.
 - Sessions are per-instance in-memory cookies; scaling out would need shared
   data-protection keys.
