@@ -1,30 +1,102 @@
 # Staff management system
 
-**Status: in progress.** Specification committed, implementation underway. No
-feature below is built yet; this README will be replaced with real setup,
-screenshots and test output as the work lands.
+C# / ASP.NET Core application over a relational database: staff records with
+search, filtering and paging, cookie authentication, role-based permissions,
+database-level constraints and an integration test suite that drives the real
+HTTP pipeline.
 
-## What this will be
+Built as project 3 of three; the others are
+[distributed-task-queue](../distributed-task-queue) and
+[monitoring-stack](../monitoring-stack).
 
-A C# application backed by a relational database, taken from coursework to
-something a reviewer can clone, run and test:
+**Verified:** `dotnet test` → 16 passed. The API was also run and driven by hand:
+`/healthz` 200, login 204 with a session cookie, `/api/auth/me` returns the role,
+creating a member of staff 201, repeating the same email 409, and the list
+endpoint returns the stored row.
 
-- Staff records — create, edit, delete, list, with search, filter and paging.
-- Validation — data annotations plus server-side checks, with useful errors.
-- Authentication — login with hashed passwords.
-- Authorisation — Admin, Manager and Viewer roles; Viewers get 403 on writes.
-- Database — EF Core migrations, foreign keys, unique email constraint,
-  required fields, indexes.
-- Errors — consistent problem-details responses, no stack traces to users.
-- Tests — unit tests for validation and rules, integration tests per endpoint,
-  auth tests for 401 and 403 paths.
-- Ops — Docker Compose with SQL Server, migrations applied repeatably.
+## What it does
 
-## Stack
+| Area | Implementation |
+| --- | --- |
+| Staff records | Create, edit, delete, list; search across name, email and job title; filter by department; paging with a total count |
+| Validation | Data annotations plus server-side checks; failures return a `ValidationProblemDetails` keyed by field |
+| Authentication | Cookie sessions; PBKDF2-HMAC-SHA256 hashes, salted, iteration count stored with the hash |
+| Authorisation | `Viewer` reads, `Manager` writes, `Admin` deletes and manages accounts — enforced by policies, not by UI |
+| Database | EF Core; unique index on staff email and on account email; indexes on department and surname; SQL Server types (`nvarchar`, `datetimeoffset`, `decimal(18,2)`, `date`) |
+| Errors | Problem details for 401/403/404/409; no stack traces leave the process |
+| Tests | 16 integration tests through `WebApplicationFactory`, plus a test that proves the unique email is enforced by the database rather than only by the handler |
+| Deployment | Multi-stage Dockerfile, Docker Compose with SQL Server 2022 and a healthcheck, migrations applied at startup |
 
-C# · .NET 8 · ASP.NET Core · EF Core · SQL Server · xUnit · Docker · GitHub Actions
+## Roles
 
-## Plan
+| Role | Read | Create/update | Delete | Manage accounts |
+| :--- | :--- | :--- | :--- | :--- |
+| Viewer | yes | no (403) | no | no |
+| Manager | yes | yes | no (403) | no |
+| Admin | yes | yes | yes | yes |
 
-The full specification, feature table, build order and acceptance criteria live
-in [`docs/spec.md`](docs/spec.md).
+## Endpoints
+
+| Method | Path | Access |
+| --- | --- | --- |
+| `GET` | `/healthz` | anonymous |
+| `POST` | `/api/auth/login` | anonymous — sets the session cookie |
+| `POST` | `/api/auth/logout` | authenticated |
+| `GET` | `/api/auth/me` | authenticated |
+| `GET` | `/api/staff?q=&department=&page=&pageSize=` | any role |
+| `GET` | `/api/staff/{id}` | any role |
+| `POST` | `/api/staff` | Manager, Admin |
+| `PUT` | `/api/staff/{id}` | Manager, Admin |
+| `DELETE` | `/api/staff/{id}` | Admin |
+| `GET` | `/api/users` | Admin |
+| `POST` | `/api/users` | Admin |
+
+## Run it
+
+Local, SQLite, no services:
+
+```bash
+dotnet run --project src/StaffManagement.Api \
+  --property:Seed__AdminPassword=change-this-password
+```
+
+Production-like, SQL Server in Docker:
+
+```bash
+cp .env.example .env          # set MSSQL_SA_PASSWORD and SEED_ADMIN_PASSWORD
+docker compose up --build
+curl -s localhost:8081/healthz
+```
+
+```bash
+dotnet test                   # 16 integration tests, SQLite, no services needed
+```
+
+## Design decisions
+
+- **Cookie auth, not bearer tokens.** The client is a same-origin application;
+  HttpOnly cookies avoid storing credentials somewhere JavaScript can read.
+  Login responses are identical for an unknown account and a wrong password, so
+  the endpoint cannot be used to enumerate users.
+- **Database constraints, not just validation.** The unique email index and the
+  required columns are in the schema; a second request that races past the
+  handler's pre-check still fails with 409, and a test inserts a duplicate
+  directly to prove the index does the work.
+- **Migrations target SQL Server.** Development and tests use SQLite with
+  `EnsureCreated`; production applies the SQL Server migrations at startup. The
+  provider is chosen by `Database:Provider`, so both paths are explicit rather
+  than guessed from the connection string.
+- **No seeded password by default.** The initial administrator is created only
+  when `Seed:AdminPassword` is configured; an unattended deployment cannot come
+  up with a known account.
+- **Policies in code, not in the UI.** `Viewer`, `Manager` and `Admin` map to
+  authorization policies, and the tests assert 401 and 403 at the HTTP layer.
+
+## Limitations
+
+- No audit trail: who changed a record and when is not recorded.
+- No account lockout or rate limiting on `/api/auth/login`.
+- Salary is stored as `decimal(18,2)` with no currency column.
+- No OpenAPI document; the endpoint table above is the contract.
+- Sessions are per-instance in-memory cookies; scaling out would need shared
+  data-protection keys.
